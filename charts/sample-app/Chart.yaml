@@ -1,0 +1,16 @@
+apiVersion: v2
+name: sample-app
+description: >
+  A sample NGINX web application used by GitOps Horizon to demonstrate
+  live Helm deployment, runtime failure detection, and AI-driven self-healing.
+type: application
+version: 0.1.0
+appVersion: "1.25.3"
+keywords:
+  - gitops
+  - helm
+  - self-healing
+  - kind
+maintainers:
+  - name: Horizon Agent
+    email: horizon-agent@internal.local

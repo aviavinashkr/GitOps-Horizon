@@ -1,0 +1,3 @@
+# reports directory — auto-generated Markdown diagnostic reports land here
+# during CI runs. Each file is named horizon-<YYYYMMDD-HHMMSS>.md
+# and is also uploaded as a GitHub Actions artifact.
