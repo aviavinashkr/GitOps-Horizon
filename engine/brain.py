@@ -1,19 +1,23 @@
 """
 engine/brain.py
 ───────────────
-Days 4 & 5: TinyFish Context Compaction + Gemini Flash-Lite Remediation
+Days 4 & 5: TinyFish Context Compaction + Gemini Remediation
 
 Architecture:
   1. TinyFish Fetch API strips raw HTML documentation pages to clean Markdown,
-     keeping the context payload tiny enough for small-context models.
-  2. Gemini 2.0 Flash-Lite receives the condensed docs + the helm error log
-     and returns a strict JSON patch for the target values file.
+     keeping the context payload tiny enough for free-tier models.
+  2. Gemini 2.5 Flash-Lite (free tier: 1,000 RPD) receives the condensed docs
+     + the helm error log and returns a strict JSON patch for the values file.
+
+Model strategy:
+  - Default: gemini-2.5-flash-lite  (1,000 RPD free — most quota headroom)
+  - Fallback: gemini-2.5-flash      (250 RPD free)
+  - Override via GEMINI_MODEL env var at any time.
+  - gemini-2.0-flash / gemini-2.0-flash-lite are deprecated June 1 2026.
 
 Fallback behaviour:
   - If TINYFISH_API_KEY is absent or the fetch fails, a lightweight built-in
     HTML-to-text scraper is used so the pipeline never hard-blocks.
-  - The Gemini model name defaults to 'gemini-2.0-flash-lite' but is
-    overrideable via the GEMINI_MODEL env var.
 """
 
 from __future__ import annotations
@@ -21,7 +25,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import textwrap
 from typing import Optional
 
 import requests
@@ -33,8 +36,14 @@ import google.generativeai as genai
 # ──────────────────────────────────────────────────────────────────────────────
 
 TINYFISH_ENDPOINT = "https://api.fetch.tinyfish.ai"
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"   # 1,000 RPD on free tier
 REQUEST_TIMEOUT = 30  # seconds
+
+# Ordered fallback chain — tried in sequence if the primary model 429s
+MODEL_FALLBACK_CHAIN = [
+    "gemini-2.5-flash-lite",   # 1,000 RPD — try first
+    "gemini-2.5-flash",        # 250 RPD  — fallback
+]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -126,11 +135,14 @@ def _fetch_via_fallback(url: str) -> str:
     return _truncate_context(text, max_chars=8000)
 
 
-def _truncate_context(text: str, max_chars: int = 8000) -> str:
-    """Ensure context stays within a safe token budget for small-context models."""
+def _truncate_context(text: str, max_chars: int = 3500) -> str:
+    """
+    Ensure context stays within a safe token budget.
+    3,500 chars ≈ ~900 tokens — well inside free-tier TPM limits.
+    """
     if len(text) <= max_chars:
         return text
-    return text[:max_chars] + "\n\n[...context truncated to fit model context window...]"
+    return text[:max_chars] + "\n\n[...truncated...]"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -160,7 +172,7 @@ def remediate_manifest_drift(
         doc_url:              Documentation URL relevant to the detected error kind.
         tinyfish_key:         TinyFish API key (None → fallback scraper).
         gemini_key:           Google Gemini API key.
-        model_name:           Override the Gemini model (default: gemini-2.0-flash-lite).
+        model_name:           Override the Gemini model (default: gemini-2.5-flash-lite).
 
     Returns:
         A dict with keys: target_file, patched_values_block, fix_rationale, faults_resolved.
@@ -170,55 +182,57 @@ def remediate_manifest_drift(
     clean_docs = get_clean_context(doc_url, tinyfish_key)
     print(f"[brain] Context size: {len(clean_docs)} chars")
 
-    # Step 2 — Configure Gemini
-    resolved_model = model_name or os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
-    genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel(
-        model_name=resolved_model,
-        generation_config=genai.types.GenerationConfig(
-            response_mime_type="application/json",
-            temperature=0.1,        # low temperature → deterministic YAML fixes
-            max_output_tokens=2048,
-        ),
+    # Step 2 — Build ultra-compact prompt (token budget: ~1,500 input tokens)
+    # Truncate inputs defensively so the combined prompt stays well under free-tier TPM.
+    error_snippet   = error_log.strip()[:1200]
+    values_snippet  = current_values_yaml.strip()[:800]
+    docs_snippet    = clean_docs[:1500]
+
+    prompt = (
+        "GitOps self-healing engine. Fix the Helm values file.\n\n"
+        f"ERROR:\n{error_snippet}\n\n"
+        f"CURRENT values (fix only broken fields):\n{values_snippet}\n\n"
+        f"DOCS (reference):\n{docs_snippet}\n\n"
+        "Return ONLY this JSON (no markdown fences):\n"
+        '{"target_file":"config/cluster-values.yaml",'
+        '"patched_values_block":"<full corrected YAML>",'
+        '"fix_rationale":"<one sentence per fix>",'
+        '"faults_resolved":["<fault1>"]}'
     )
 
-    # Step 3 — Construct rigid system + user prompt
-    prompt = textwrap.dedent(f"""
-    You are an automated GitOps self-healing engine.
-    A local Kubernetes (Kind) deployment failed. Your task is to analyse the
-    error, consult the provided reference documentation, and produce a corrected
-    Helm values file that resolves ALL reported faults.
+    # Step 3 — Try model fallback chain: primary → fallback on 429
+    override = model_name or os.getenv("GEMINI_MODEL")
+    candidates = [override] if override else list(MODEL_FALLBACK_CHAIN)
 
-    ## Deployment Error Log
-    ```
-    {error_log.strip()}
-    ```
+    genai.configure(api_key=gemini_key)
+    response = None
+    last_exc: Exception | None = None
 
-    ## Current cluster-values.yaml (the file that needs fixing)
-    ```yaml
-    {current_values_yaml.strip()}
-    ```
+    for candidate in candidates:
+        print(f"[brain] Calling {candidate} ...")
+        try:
+            mdl = genai.GenerativeModel(
+                model_name=candidate,
+                generation_config=genai.types.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                    max_output_tokens=1024,
+                ),
+            )
+            response = mdl.generate_content(prompt)
+            print(f"[brain] ✓ Response received from {candidate}")
+            break
+        except Exception as exc:
+            last_exc = exc
+            if "429" in str(exc) or "quota" in str(exc).lower():
+                print(f"[brain] {candidate} quota hit — trying next model in chain.")
+                continue
+            raise  # non-quota errors bubble immediately
 
-    ## Reference Documentation (condensed Markdown via TinyFish)
-    {clean_docs}
-
-    ## Instructions
-    1. Identify every fault in the values file based on the error log.
-    2. Apply minimal, correct changes — do NOT alter fields that are already valid.
-    3. Return ONLY valid YAML for the corrected values file.
-    4. Provide a concise rationale explaining each fix.
-
-    ## Required Output Format (strict JSON — no markdown fences, no extra keys)
-    {{
-      "target_file": "config/cluster-values.yaml",
-      "patched_values_block": "<full corrected YAML as a single string>",
-      "fix_rationale": "<concise explanation of every change made>",
-      "faults_resolved": ["<fault 1>", "<fault 2>"]
-    }}
-    """).strip()
-
-    print(f"[brain] Calling {resolved_model} ...")
-    response = model.generate_content(prompt)
+    if response is None:
+        raise RuntimeError(
+            f"All models in fallback chain exhausted. Last error: {last_exc}"
+        )
 
     # Step 4 — Parse JSON response
     raw_text = response.text.strip()

@@ -132,7 +132,7 @@ jobs:
         env:
           TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: "gemini-2.0-flash-lite"
+          GEMINI_MODEL: "gemini-2.5-flash-lite"   # 1,000 RPD free tier; fallback: gemini-2.5-flash
         run: |
           echo "Starting GitOps Horizon remediation engine ..."
           python -m engine.remediate --log-file runtime_error.log
