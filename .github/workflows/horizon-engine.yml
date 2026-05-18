@@ -194,8 +194,14 @@ jobs:
 
           See reports/ for the full diagnostic trace."
 
-            git push origin HEAD:${{ github.head_ref }}
-            echo "✅ Patched files committed and pushed to PR branch."
+            # Authenticate push via token injected into remote URL.
+            # github.head_ref is set on pull_request events; github.ref_name
+            # is the fallback for workflow_dispatch / push events.
+            TARGET_BRANCH="${{ github.head_ref || github.ref_name }}"
+            git remote set-url origin \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
+            git push origin "HEAD:${TARGET_BRANCH}"
+            echo "✅ Patched files committed and pushed to branch: ${TARGET_BRANCH}"
           fi
 
       # ────────────────────────────────────────────────────────────────────
