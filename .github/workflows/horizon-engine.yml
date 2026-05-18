@@ -90,7 +90,7 @@ jobs:
               --create-namespace \
               --timeout 90s \
               --wait \
-              --atomic \
+              --rollback-on-failure \
               2> runtime_error.log; then
             echo "DEPLOY_FAILED=false" >> "$GITHUB_ENV"
             echo "✅ Deployment succeeded on first attempt — chart is already healthy."

@@ -1,4 +1,5 @@
-google-generativeai>=0.7.0
+# google-generativeai is fully deprecated; google-genai is the supported replacement
+google-genai>=1.0.0
 requests>=2.31.0
 pyyaml>=6.0.1
 rich>=13.7.0
