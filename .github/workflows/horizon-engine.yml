@@ -173,6 +173,8 @@ jobs:
       # ────────────────────────────────────────────────────────────────────
       - name: "💾 Commit Remediated Assets to PR Branch"
         if: env.DEPLOY_FAILED == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
         run: |
           git config --global user.name  "Horizon Agent 🤖"
           git config --global user.email "horizon-agent@gitops-horizon.local"
