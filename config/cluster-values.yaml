@@ -1,40 +1,14 @@
-# ============================================================
-# config/cluster-values.yaml
-# ============================================================
-# INTENTIONALLY BROKEN — used to trigger the GitOps Horizon
-# self-healing loop. This file overrides chart defaults with
-# values that will cause a real runtime failure on a modern
-# Kubernetes cluster (Kind v0.24+ / K8s >= 1.25).
-#
-# FAULT 1 ─ replicaCount is set to an invalid string value,
-#            causing Helm schema validation to fail when the
-#            Deployment spec tries to use it.
-#
-# FAULT 2 ─ image tag deliberately set to a non-existent tag
-#            so that even if Helm renders cleanly the pod will
-#            hit an ImagePullBackOff — a realistic prod failure.
-#
-# FAULT 3 ─ resources block contains an impossible CPU limit
-#            string that Kubernetes quantity parsing will reject.
-#
-# The remediate.py script + Gemini will detect, analyse, and
-# produce a corrected version of this file automatically.
-# ============================================================
-
-replicaCount: "two"          # FAULT 1: must be an integer, not a string
-
+replicaCount: 2
 image:
   repository: nginx
   pullPolicy: Always
-  tag: "99.99.99-nonexistent" # FAULT 2: no such tag on Docker Hub
-
+  tag: 1.25.3
 service:
   type: ClusterIP
   port: 80
-
 resources:
   limits:
-    cpu: "0xBAD"              # FAULT 3: invalid Kubernetes quantity
+    cpu: 100m
     memory: 128Mi
   requests:
     cpu: 50m
