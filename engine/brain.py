@@ -32,7 +32,7 @@ import google.generativeai as genai
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-TINYFISH_ENDPOINT = "https://api.fetch.tinyfish.ai/fetch"
+TINYFISH_ENDPOINT = "https://api.fetch.tinyfish.ai"
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash-lite"
 REQUEST_TIMEOUT = 30  # seconds
 
@@ -67,33 +67,37 @@ def get_clean_context(documentation_url: str, tinyfish_key: Optional[str] = None
 
 def _fetch_via_tinyfish(url: str, api_key: str) -> str:
     """Call the TinyFish Fetch API and return the Markdown payload."""
+    # Auth uses X-API-Key header per official docs: https://docs.tinyfish.ai/fetch-api
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "X-API-Key": api_key,
         "Content-Type": "application/json",
-        "Accept": "application/json",
     }
+    # POST body: urls array (batch-compatible endpoint)
     payload = {
-        "url": url,
-        "target_selector": "article, main, .content, #content",  # focus on body content
-        "remove_selector": "nav, footer, .sidebar, script, style, .admonition-note",
-        "format": "markdown",
+        "urls": [url],
     }
 
     response = requests.post(
         TINYFISH_ENDPOINT,
         headers=headers,
         json=payload,
-        timeout=REQUEST_TIMEOUT,
+        timeout=150,  # Fetch API has 110s per-URL backend timeout; use 150s client timeout
     )
     response.raise_for_status()
 
     data = response.json()
 
-    # TinyFish may return the content under different keys depending on version
-    for key in ("markdown", "content", "text", "result"):
-        if key in data and data[key]:
-            raw = data[key]
-            return _truncate_context(raw, max_chars=8000)
+    # Response is a list of results when urls array is passed
+    if isinstance(data, list) and data:
+        item = data[0]
+        for key in ("markdown", "content", "text", "result"):
+            if key in item and item[key]:
+                return _truncate_context(item[key], max_chars=8000)
+    # Fallback: flat dict response
+    if isinstance(data, dict):
+        for key in ("markdown", "content", "text", "result"):
+            if key in data and data[key]:
+                return _truncate_context(data[key], max_chars=8000)
 
     return f"[TinyFish returned an unexpected response structure for {url}]"
 
